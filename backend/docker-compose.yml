@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./ml/saved_models:/app/ml/saved_models
+      - ./data:/app/data
+    env_file:
+      - .env
+    restart: always
+
+  # Optional: PostgreSQL Database (Recommended for Production vs SQLite)
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: cti_user
+      POSTGRES_PASSWORD: cti_password
+      POSTGRES_DB: cti_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
