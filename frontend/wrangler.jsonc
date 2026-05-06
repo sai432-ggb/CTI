@@ -1,13 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "cti",
-  "compatibility_date": "2026-05-06",
-  "compatibility_flags": ["nodejs_compat"],
-  "main": "./dist/server/worker-entry.js",
-  "assets": {
-    "directory": "./dist/client"
-  },
-  "observability": {
-    "enabled": true
-  }
+  "name": "cti-nlp-app",
+  "compatibility_date": "2025-09-24",
+  "compatibility_flags": ["nodejs_compat"]
 }
