@@ -2,8 +2,9 @@ name = "cti-atj"
 compatibility_date = "2025-09-24"
 compatibility_flags = ["nodejs_compat"]
 
-# TanStack Start Pages configuration - use the actual output directory
+# Point to the actual build output directory from Vite
 pages_build_output_dir = "dist/client"
 
 [build]
-command = "npm run build:cf"
+command = "npm run build"
+
