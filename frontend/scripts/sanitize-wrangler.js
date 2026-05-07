@@ -10,13 +10,29 @@ if (!fs.existsSync(path)) {
 
 const cfg = JSON.parse(fs.readFileSync(path, 'utf8'));
 
-// Remove unsupported keys
-const allowed = ['name','main','compatibility_date','type','routes','triggers','build','site'];
+// Remove unsupported keys completely
+const unsupported = [
+  'definedEnvironments','ai_search_namespaces','ai_search','secrets_store_secrets',
+  'artifacts','unsafe_hello_world','flagship','worker_loaders','ratelimits',
+  'vpc_services','vpc_networks','python_modules','configPath','userConfigPath',
+  'topLevelName','legacy_env','compatibility_flags','jsx_factory','jsx_fragment',
+  'rules','assets','vars','durable_objects','workflows','migrations',
+  'kv_namespaces','cloudchamber','send_email','queues','r2_buckets',
+  'd1_databases','vectorize','analytics_engine_datasets','dispatch_namespaces',
+  'mtls_certificates','pipelines','logfwdr','no_bundle'
+];
+
 for (const k of Object.keys(cfg)) {
-  if (!allowed.includes(k)) {
+  if (unsupported.includes(k)) {
     console.log(`Removing unsupported field: ${k}`);
     delete cfg[k];
   }
+}
+
+// Remove triggers entirely - it's causing issues
+if (cfg.triggers) {
+  console.log('Removing triggers block entirely');
+  delete cfg.triggers;
 }
 
 // Fix triggers: remove if empty or invalid
