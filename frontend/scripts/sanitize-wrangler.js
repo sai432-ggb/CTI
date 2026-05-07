@@ -8,3 +8,14 @@ if (fs.existsSync(wranglerPath)) {
 } else {
   console.log('No generated wrangler.json found')
 }
+// scripts/sanitize-wrangler.js
+import fs from 'fs';
+const path = 'dist/client/wrangler.json';
+if (fs.existsSync(path)) {
+  const config = JSON.parse(fs.readFileSync(path, 'utf-8'));
+  if (config.triggers) {
+    delete config.triggers;
+    fs.writeFileSync(path, JSON.stringify(config, null, 2));
+    console.log('Removed triggers from dist/client/wrangler.json');
+  }
+}
