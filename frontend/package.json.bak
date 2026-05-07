@@ -1,0 +1,9 @@
+"scripts": {
+  "dev": "vite dev",
+  "build": "vite build && node scripts/sanitize-wrangler.js",
+  "build:dev": "vite build --mode development",
+  "preview": "vite preview",
+  "lint": "eslint .",
+  "format": "prettier --write .",
+  "deploy": "npm run build && wrangler deploy"
+}
