@@ -47,6 +47,14 @@ class APIClient {
       return await response.json();
     } catch (error) {
       console.error('API Request Failed:', error);
+      // Log detailed error information for debugging 400 errors
+      if (error instanceof Error && error.message.includes('400')) {
+        console.error('400 Bad Request Details:', {
+          url: `${this.baseUrl}${endpoint}`,
+          status: error.message,
+          body: options.body
+        });
+      }
       throw error;
     }
   }

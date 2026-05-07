@@ -35,7 +35,7 @@ function Dashboard() {
         <Kpi label="Total scans" value={stats.total} icon={<Shield className="h-4 w-4" />} accent="primary" />
         <Kpi label="Avg risk" value={stats.avg} icon={<Activity className="h-4 w-4" />} accent="blue" />
         <Kpi label="High + critical" value={stats.bySev.high + stats.bySev.critical} icon={<AlertTriangle className="h-4 w-4" />} accent="critical" />
-        <Kpi label="IOCs extracted" value={items.reduce((s, i) => s + i.iocs.length, 0)} icon={<Target className="h-4 w-4" />} accent="accent" />
+        <Kpi label="IOCs extracted" value={items.reduce((s, i) => s + (i.iocs?.length ?? 0), 0)} icon={<Target className="h-4 w-4" />} accent="accent" />
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
@@ -45,7 +45,7 @@ function Dashboard() {
               const pct = stats.total ? (stats.bySev[s] / stats.total) * 100 : 0;
               const colorMap = { low: "bg-success", medium: "bg-warning", high: "bg-destructive", critical: "bg-critical" };
               return (
-                <div key={s}>
+                <div key={`severity-${s}`}>
                   <div className="mb-1 flex justify-between text-xs">
                     <span className="font-bold uppercase tracking-wider">{s}</span>
                     <span className="text-muted-foreground">{stats.bySev[s]}</span>
@@ -107,7 +107,7 @@ function Kpi({ label, value, icon, accent }: { label: string; value: number; ico
     <div className="relative overflow-hidden rounded-xl border border-border/60 bg-card/60 p-5 backdrop-blur-sm">
       <div className={`absolute right-3 top-3 grid h-8 w-8 place-items-center rounded-md ${accentMap[accent]}`}>{icon}</div>
       <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{label}</div>
-      <div className="mt-2 font-display text-4xl font-bold">{value}</div>
+      <div className="mt-2 font-display text-4xl font-bold">{isNaN(value) ? 0 : value}</div>
     </div>
   );
 }

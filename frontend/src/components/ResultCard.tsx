@@ -17,7 +17,7 @@ export function ResultCard({ result }: { result: any }) {
     input = result.target;
     score = Math.round(result.result_data.confidence * 100);
     severity = result.result_data.is_malicious ? "high" : "low";
-    verdict = result.result_data.is_malicious ? "Malicious URL detected" : "URL appears safe";
+    verdict = result.result_data.reason || (result.result_data.is_malicious ? "Threat detected" : "No threat detected");
   } else {
     // Legacy mock structure
     analysisType = result.type;

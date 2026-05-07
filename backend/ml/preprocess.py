@@ -1,21 +1,41 @@
+"""
+CTI-NLP - URL Preprocessor
+Kept for backwards compatibility with any code that imports clean_url.
+"""
+
 import re
 from urllib.parse import urlparse
 
+
 def clean_url(url: str) -> str:
-    """Preprocesses a URL for feature extraction."""
-    url = url.lower().strip()
-    # Remove http/https to focus on domain/path structure
-    url = re.sub(r'^https?://', '', url)
-    # Remove www
-    url = re.sub(r'^www\.', '', url)
+    """
+    Normalize a URL for analysis.
+    - Strips whitespace
+    - Converts to lowercase
+    - Adds http:// if no scheme present
+    """
+    url = str(url).strip().lower()
+    if not url.startswith(('http://', 'https://', 'ftp://')):
+        url = 'http://' + url
     return url
 
-def extract_features(url: str) -> dict:
-    """Extract manual features alongside TF-IDF (optional advanced usage)."""
-    parsed = urlparse(url if "://" in url else f"http://{url}")
-    return {
-        "length": len(url),
-        "num_digits": sum(c.isdigit() for c in url),
-        "num_special_chars": len(re.findall(r'[^a-zA-Z0-9]', url)),
-        "has_ip": 1 if re.search(r'\d+\.\d+\.\d+\.\d+', url) else 0
-    }
+
+def extract_domain(url: str) -> str:
+    """Extract just the domain from a URL."""
+    url = clean_url(url)
+    try:
+        parsed = urlparse(url)
+        return parsed.netloc.replace('www.', '')
+    except Exception:
+        return url
+
+
+def is_valid_url(url: str) -> bool:
+    """Check if a string looks like a URL."""
+    url = str(url).strip()
+    pattern = re.compile(
+        r'^(https?://|ftp://)?'
+        r'(([a-zA-Z0-9\-]+\.)+[a-zA-Z]{2,})'
+        r'(:\d+)?(/.*)?$'
+    )
+    return bool(pattern.match(url))
