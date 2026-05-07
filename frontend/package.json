@@ -8,7 +8,7 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "deploy": "npm run build && wrangler pages deploy dist/client --project-name cti-nlp"
+    "deploy": "npm run build && wrangler pages deploy dist --project-name cti-nlp"
   },
   "dependencies": {
     "@cloudflare/vite-plugin": "^1.25.5",
