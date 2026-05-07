@@ -1,4 +1,5 @@
-const fs = require('fs');
+import fs from 'fs';
+
 const path = './dist/client/wrangler.json';
 
 if (!fs.existsSync(path)) {
@@ -30,13 +31,24 @@ if (cfg.triggers) {
   }
 }
 
-// Ensure minimal valid structure
+// Ensure minimal valid structure for Pages deployment
 if (!cfg.compatibility_date) {
   cfg.compatibility_date = "2026-01-01";
 }
 
 if (!cfg.type) {
   cfg.type = "javascript";
+}
+
+// Add required fields for Pages deployment
+if (!cfg.main) {
+  cfg.main = "../server/server.js";
+}
+
+if (!cfg.assets) {
+  cfg.assets = {
+    "directory": "./dist"
+  };
 }
 
 fs.writeFileSync(path, JSON.stringify(cfg, null, 2));
