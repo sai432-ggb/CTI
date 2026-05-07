@@ -1,130 +1,119 @@
+#!/usr/bin/env python3
 """
-CTI-NLP - Model Training Script
-Drop-in replacement for your existing train_model.py.
-
-Run this with:  python train_model.py
-
-Your dataset only needs two columns: 'url' and a label column.
-Supported label values: 'phishing', 'legitimate', 'benign', '0', '1', etc.
+Main training entrypoint.
+Usage: python train_model.py
 """
 
-import pandas as pd
 import os
 import sys
+import time
+import logging
+from datetime import datetime
+import pandas as pd
+import joblib
 
-# Add parent dir to path so imports work
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# ensure repo root is on path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from ml.model import ThreatModel
+from ml.feature_extractor import get_feature_names
 
-# ─────────────────────────────────────────────
-# CONFIGURATION - Edit these if needed
-# ─────────────────────────────────────────────
+# CONFIG
 DATASET_PATH = "data/datasets/url_dataset.csv"
-URL_COLUMN = "url"           # Column name containing URLs
-LABEL_COLUMN = "type"        # Column name containing labels
-SAMPLE_SIZE = 60000          # How many URLs to train on (increase if RAM allows)
-# ─────────────────────────────────────────────
+URL_COLUMN = "url"
+LABEL_COLUMN = "type"
+SAMPLE_SIZE = 100000  # Use 100K samples for memory-efficient training
+CACHE_DIR = "cache"
+LOG_DIR = "logs"
+MODEL_DIR = "ml/saved_models"
 
-os.makedirs("ml/saved_models", exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(MODEL_DIR, exist_ok=True)
 
-print("=" * 60)
-print("  CTI-NLP Threat Model - Feature Engineering Trainer")
-print("=" * 60)
-
-# ── Step 1: Load dataset ──
-print(f"\n[1/5] Loading dataset from {DATASET_PATH}...")
-try:
-    df = pd.read_csv(DATASET_PATH)
-    print(f"      Loaded {len(df):,} rows")
-    print(f"      Columns: {list(df.columns)}")
-except FileNotFoundError:
-    print(f"\n❌ ERROR: Dataset not found at '{DATASET_PATH}'")
-    print("   Place your URL dataset CSV at that path and re-run.")
-    sys.exit(1)
-
-# ── Step 2: Normalize labels ──
-print(f"\n[2/5] Normalizing labels (column: '{LABEL_COLUMN}')...")
-
-LEGITIMATE_VALUES = {'legitimate', 'benign', 'safe', 'good', '0', 'clean', 'white'}
-
-df['is_malicious'] = df[LABEL_COLUMN].astype(str).str.lower().str.strip().apply(
-    lambda x: 0 if x in LEGITIMATE_VALUES else 1
+# Logging
+timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+logfile = os.path.join(LOG_DIR, f"train_{timestamp}.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[logging.FileHandler(logfile), logging.StreamHandler(sys.stdout)]
 )
+logger = logging.getLogger("train")
 
-legit_count = (df['is_malicious'] == 0).sum()
-malicious_count = (df['is_malicious'] == 1).sum()
-print(f"      Legitimate: {legit_count:,}")
-print(f"      Malicious:  {malicious_count:,}")
+def backup_artifacts():
+    os.makedirs("backups", exist_ok=True)
+    try:
+        if os.path.exists(DATASET_PATH):
+            dst = f"backups/url_dataset_{timestamp}.csv"
+            logger.info(f"Backing up dataset to {dst}")
+            import shutil
+            shutil.copy2(DATASET_PATH, dst)
+    except Exception as e:
+        logger.warning(f"Backup dataset failed: {e}")
+    try:
+        model_path = os.path.join(MODEL_DIR, "threat_pipeline.joblib")
+        if os.path.exists(model_path):
+            dst = f"backups/threat_pipeline_{timestamp}.joblib"
+            logger.info(f"Backing up existing model to {dst}")
+            import shutil
+            shutil.copy2(model_path, dst)
+    except Exception as e:
+        logger.warning(f"Backup model failed: {e}")
 
-if legit_count == 0 or malicious_count == 0:
-    print("\n❌ ERROR: One class has 0 samples!")
-    print(f"   Unique label values in your dataset: {df[LABEL_COLUMN].unique()}")
-    print("   Update LEGITIMATE_VALUES in this script to match your data.")
-    sys.exit(1)
+def main():
+    logger.info("="*60)
+    logger.info("CTI-NLP Threat Model - Full Training Runner")
+    logger.info("="*60)
 
-# ── Step 3: Add anchor samples (always-legit sites your model must know) ──
-print(f"\n[3/5] Adding anchor legitimate samples...")
-anchor_legit = pd.DataFrame({
-    URL_COLUMN: [
-        'https://www.google.com',
-        'https://www.youtube.com',
-        'https://www.microsoft.com',
-        'https://www.amazon.com',
-        'https://github.com',
-        'https://stackoverflow.com',
-        'https://www.wikipedia.org',
-        'https://www.linkedin.com',
-        # Your college URLs
-        'https://geethashishu.in/',
-        'http://atme.edu.in/',
-        'https://www.atme.edu.in',
-    ],
-    LABEL_COLUMN: ['legitimate'] * 11,
-    'is_malicious': [0] * 11
-})
+    # Step 0: basic checks
+    if not os.path.exists(DATASET_PATH):
+        logger.error(f"Dataset not found at {DATASET_PATH}")
+        sys.exit(1)
 
-# Add anchor phishing samples that model must always catch
-anchor_malicious = pd.DataFrame({
-    URL_COLUMN: [
-        'http://secure-login-update.bank-verify.zip/account?id=1',
-        'http://192.168.1.1/phishing/login.html',
-        'http://paypal-update-secure.xyz/verify',
-        'http://microsoft-login.suspicious-domain.top/signin',
-        'http://bit.ly/suslink123',
-        'http://login.update-microsoft-secure.top',
-    ],
-    LABEL_COLUMN: ['phishing'] * 6,
-    'is_malicious': [1] * 6
-})
+    backup_artifacts()
 
-df = pd.concat([df, anchor_legit, anchor_malicious], ignore_index=True)
-print(f"      Added {len(anchor_legit)} anchor legit + {len(anchor_malicious)} anchor phishing samples")
+    # Load dataset
+    logger.info("[1/6] Loading dataset")
+    df = pd.read_csv(DATASET_PATH)
+    logger.info(f"Loaded {len(df):,} rows. Columns: {list(df.columns)}")
 
-# ── Step 4: Sample for memory management ──
-print(f"\n[4/5] Sampling {SAMPLE_SIZE:,} rows for training...")
-sample_size = min(SAMPLE_SIZE, len(df))
-df_sampled = df.sample(n=sample_size, random_state=42)
+    # Normalize labels to binary 'is_malicious'
+    logger.info("[2/6] Normalizing labels")
+    LEGITIMATE_VALUES = {'legitimate', 'benign', 'safe', 'good', '0', 'clean', 'white', 'false', 'no'}
+    df['is_malicious'] = df[LABEL_COLUMN].astype(str).str.lower().str.strip().apply(
+        lambda x: 0 if x in LEGITIMATE_VALUES else 1
+    )
+    logger.info(f"Legitimate: {(df['is_malicious']==0).sum():,}, Malicious: {(df['is_malicious']==1).sum():,}")
 
-# Make sure anchor samples are always included
-df_anchors = pd.concat([anchor_legit, anchor_malicious])
-df_sampled = pd.concat([df_sampled, df_anchors]).drop_duplicates(subset=[URL_COLUMN])
+    # Optional sampling
+    if SAMPLE_SIZE:
+        sample_size = min(SAMPLE_SIZE, len(df))
+        logger.info(f"[3/6] Sampling {sample_size:,} rows (stratified)")
+        from sklearn.model_selection import train_test_split
+        df_sampled, _ = train_test_split(df, train_size=sample_size, stratify=df['is_malicious'], random_state=42)
+        df = df_sampled.reset_index(drop=True)
+        logger.info(f"Sampled dataset size: {len(df):,}")
+    else:
+        logger.info("[3/6] Using full dataset for training")
 
-print(f"      Final training size: {len(df_sampled):,} URLs")
+    # Step 4: Train
+    logger.info("[4/6] Training model")
+    model = ThreatModel(model_path=os.path.join(MODEL_DIR, "threat_pipeline.joblib"), cache_dir=CACHE_DIR, logger=logger)
+    results = model.train(df, text_col=URL_COLUMN, label_col='is_malicious')
 
-# ── Step 5: Train ──
-print(f"\n[5/5] Training model...")
-model = ThreatModel()
-results = model.train(df_sampled, text_col=URL_COLUMN, label_col='is_malicious')
+    # Step 5: Save summary and metadata
+    logger.info("[5/6] Saving training summary")
+    summary_path = os.path.join(MODEL_DIR, f"train_summary_{timestamp}.joblib")
+    joblib.dump({"results": results, "timestamp": timestamp}, summary_path)
+    logger.info(f"Training summary saved to {summary_path}")
 
-# ── Final Summary ──
-print("\n" + "=" * 60)
-print("   TRAINING COMPLETE")
-print("=" * 60)
-print(f"  Accuracy:        {results['accuracy']*100:.1f}%")
-print(f"  True Legitimate: {results['true_legit']}")
-print(f"  False Positives: {results['false_positives']}  ← good URLs wrongly flagged")
-print(f"  False Negatives: {results['false_negatives']}  ← bad URLs missed")
-print(f"  True Malicious:  {results['true_malicious']}")
-print(f"\n  Model saved to: ml/saved_models/threat_pipeline.joblib")
-print("\n   Restart your FastAPI backend to use the new model!")
+    # Step 6: Final notes
+    logger.info("[6/6] TRAINING COMPLETE")
+    logger.info(f"Accuracy: {results['accuracy']*100:.2f}%")
+    logger.info(f"Model saved to {results.get('model_path')}")
+    logger.info("Restart your FastAPI backend to use the new model.")
+    logger.info("="*60)
+
+if __name__ == "__main__":
+    main()

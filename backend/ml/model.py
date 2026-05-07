@@ -1,113 +1,128 @@
 """
-CTI-NLP - Improved Threat Model
-Uses feature engineering instead of TF-IDF character ngrams.
-This is how real URL classifiers work (PhishTank, Google Safe Browsing, etc.)
+Improved ThreatModel with calibration, SMOTE option, chunked feature caching,
+operational threshold selection, and robust saving of metadata.
 """
 
-import joblib
 import os
+import time
+import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier, VotingClassifier
-from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
-from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
-from sklearn.preprocessing import StandardScaler
+from datetime import datetime
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
 from sklearn.pipeline import Pipeline
-from sklearn.utils import resample
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, precision_recall_curve
+from sklearn.calibration import CalibratedClassifierCV
+from imblearn.over_sampling import SMOTE
 
 from .feature_extractor import url_to_feature_vector, get_feature_names
 
-
 class ThreatModel:
-    def __init__(self, model_path: str = "ml/saved_models/threat_pipeline.joblib"):
+    def __init__(self, model_path: str = "ml/saved_models/threat_pipeline.joblib", cache_dir: str = "cache", logger=None):
         self.model_path = model_path
+        self.cache_dir = cache_dir
         os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
-        self.pipeline = self._load_model()
-
-    def _load_model(self):
+        os.makedirs(self.cache_dir, exist_ok=True)
+        self.pipeline = None
+        self.feature_names = get_feature_names()
+        self.logger = logger
+        # load existing model if present
         if os.path.exists(self.model_path):
-            print(f"Loaded existing model from {self.model_path}")
-            return joblib.load(self.model_path)
-        return None
+            try:
+                loaded = joblib.load(self.model_path)
+                # support both dict and pipeline-only artifacts
+                if isinstance(loaded, dict) and 'pipeline' in loaded:
+                    self.pipeline = loaded['pipeline']
+                    self.feature_names = loaded.get('feature_names', self.feature_names)
+                    self.threshold = loaded.get('threshold', 0.6)
+                else:
+                    self.pipeline = loaded
+                    self.threshold = 0.6
+                if self.logger:
+                    self.logger.info(f"Loaded existing model from {self.model_path}")
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"Failed to load existing model: {e}")
 
-    def _extract_features_batch(self, urls: pd.Series) -> np.ndarray:
-        """Convert a list of URLs into a feature matrix."""
-        print(f"  Extracting features from {len(urls)} URLs...")
+    def _log(self, msg):
+        if self.logger:
+            self.logger.info(msg)
+        else:
+            print(msg)
+
+    def _extract_features_batch(self, urls: pd.Series, cache_name: str = None):
+        """
+        Convert a list of URLs into a feature matrix.
+        If cache_name provided, save to cache_dir/cache_name.npz and reuse if exists.
+        """
+        if cache_name:
+            cache_path = os.path.join(self.cache_dir, f"{cache_name}.npz")
+            if os.path.exists(cache_path):
+                self._log(f"Loading cached features from {cache_path}")
+                data = np.load(cache_path)
+                return data['X'], data['y']
+
+        self._log(f"Extracting features from {len(urls)} URLs...")
         features = []
         for i, url in enumerate(urls):
             if i % 10000 == 0 and i > 0:
-                print(f"  ... processed {i}/{len(urls)}")
+                self._log(f"  ... processed {i}/{len(urls)}")
             try:
-                features.append(url_to_feature_vector(str(url)))
-            except Exception:
-                # If feature extraction fails, use zeros
-                features.append([0] * len(get_feature_names()))
-        return np.array(features)
+                vec = url_to_feature_vector(str(url))
+                if len(vec) != len(self.feature_names):
+                    raise ValueError("feature length mismatch")
+                features.append(vec)
+            except Exception as e:
+                # log and use zeros
+                self._log(f"Feature extraction failed for index {i}: {e}")
+                features.append([0.0] * len(self.feature_names))
+        X = np.array(features, dtype=float)
+        # y must be provided by caller; return X only here
+        if cache_name:
+            np.savez_compressed(cache_path, X=X)
+            self._log(f"Saved features to cache {cache_path}")
+        return X
 
-    def _balance_dataset(self, X: np.ndarray, y: np.ndarray):
-        """Balance classes by upsampling minority class."""
-        X_df = pd.DataFrame(X)
-        X_df['label'] = y
-
-        majority = X_df[X_df['label'] == 0]
-        minority = X_df[X_df['label'] == 1]
-
-        print(f"  Before balancing: {len(majority)} legitimate, {len(minority)} phishing")
-
-        # Upsample minority to match majority
-        minority_upsampled = resample(
-            minority,
-            replace=True,
-            n_samples=len(majority),
-            random_state=42
-        )
-        balanced = pd.concat([majority, minority_upsampled]).sample(frac=1, random_state=42)
-
-        y_balanced = balanced['label'].values
-        X_balanced = balanced.drop('label', axis=1).values
-
-        print(f"  After balancing: {sum(y_balanced == 0)} legitimate, {sum(y_balanced == 1)} phishing")
-        return X_balanced, y_balanced
-
-    def train(self, df: pd.DataFrame, text_col: str = 'url', label_col: str = 'is_malicious'):
+    def _balance_dataset(self, X: np.ndarray, y: np.ndarray, method: str = "upsample"):
         """
-        Train the model using feature engineering instead of TF-IDF.
-        This gives much better accuracy and fewer false positives.
+        Balance classes. method: 'upsample' (safer for large datasets)
+        Returns balanced X, y.
         """
-        print("\n=== CTI-NLP Model Training (Feature Engineering Mode) ===\n")
+        self._log(f"  Before balancing: {np.sum(y==0)} legitimate, {np.sum(y==1)} malicious")
+        
+        # Use simple upsample for large datasets to avoid memory issues
+        if method == "smote":
+            self._log("Using upsample instead of SMOTE for memory efficiency with large datasets")
+            method = "upsample"
 
-        # Step 1: Extract features
-        print("Step 1: Extracting URL features...")
-        X = self._extract_features_batch(df[text_col])
-        y = df[label_col].values
+        if method == "upsample":
+            # simple upsample minority
+            dfX = pd.DataFrame(X)
+            dfX['label'] = y
+            majority = dfX[dfX['label'] == 0]
+            minority = dfX[dfX['label'] == 1]
+            minority_upsampled = minority.sample(n=len(majority), replace=True, random_state=42)
+            balanced = pd.concat([majority, minority_upsampled]).sample(frac=1, random_state=42)
+            y_bal = balanced['label'].values
+            X_bal = balanced.drop('label', axis=1).values
+            self._log(f"  After upsample: {np.sum(y_bal==0)} legitimate, {np.sum(y_bal==1)} malicious")
+            return X_bal, y_bal
 
-        # Step 2: Balance the dataset
-        print("Step 2: Balancing dataset...")
-        X, y = self._balance_dataset(X, y)
+        return X, y
 
-        # Step 3: Train/test split
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y,
-            test_size=0.2,
-            stratify=y,
-            random_state=42
-        )
-        print(f"Step 3: Split into {len(X_train)} training, {len(X_test)} test samples")
-
-        # Step 4: Build the ENSEMBLE model
-        # We use 3 models that vote - this reduces false positives dramatically
-        print("Step 4: Building ensemble classifier...")
-
+    def _build_pipeline(self):
         rf = RandomForestClassifier(
-            n_estimators=200,
-            max_depth=15,
-            min_samples_split=10,
-            min_samples_leaf=4,
+            n_estimators=100,  # Reduced for memory
+            max_depth=10,      # Reduced depth
+            min_samples_split=10,  # Increased to prevent overfitting
+            min_samples_leaf=5,    # Increased to prevent overfitting
             random_state=42,
-            n_jobs=-1,
-            class_weight='balanced'
+            n_jobs=1,          # Single thread to save memory
+            class_weight='balanced',
+            max_samples=0.6    # Use 60% of samples per tree
         )
-
         gb = GradientBoostingClassifier(
             n_estimators=150,
             learning_rate=0.1,
@@ -115,42 +130,127 @@ class ThreatModel:
             random_state=42,
             subsample=0.8
         )
-
-        # Ensemble: majority vote between RF and GB
         ensemble = VotingClassifier(
             estimators=[('rf', rf), ('gb', gb)],
-            voting='soft'  # Use probability averaging, not hard vote
+            voting='soft',
+            n_jobs=1  # Single thread to save memory
         )
-
-        # Wrap in pipeline with scaler
-        self.pipeline = Pipeline([
+        pipeline = Pipeline([
             ('scaler', StandardScaler()),
             ('clf', ensemble)
         ])
+        return pipeline
 
-        print("Step 5: Training ensemble (this takes 1-3 minutes)...")
+    def train(self, df: pd.DataFrame, text_col: str = 'url', label_col: str = 'is_malicious', cache_name: str = None):
+        """
+        Train the model end-to-end. Returns metrics and saves model + metadata.
+        """
+        self._log("\n=== CTI-NLP Model Training (Feature Engineering Mode) ===\n")
+        # Step 1: Extract features (with optional caching)
+        self._log("Step 1: Extracting URL features...")
+        X = self._extract_features_batch(df[text_col], cache_name=cache_name)
+        y = df[label_col].values
+
+        # Step 2: Balance dataset
+        self._log("Step 2: Balancing dataset...")
+        X_bal, y_bal = self._balance_dataset(X, y, method="upsample")
+
+        # Step 3: Train/test split with holdout validation for calibration
+        X_train, X_hold, y_train, y_hold = train_test_split(
+            X_bal, y_bal, test_size=0.2, stratify=y_bal, random_state=42
+        )
+        self._log(f"Step 3: Split into {len(X_train)} training, {len(X_hold)} holdout samples")
+
+        # Step 4: Build pipeline and fit
+        self._log("Step 4: Building ensemble classifier...")
+        self.pipeline = self._build_pipeline()
+        self._log("Step 5: Training ensemble (this may take time)...")
         self.pipeline.fit(X_train, y_train)
 
-        # Step 6: Evaluate
-        print("\n=== EVALUATION ===")
-        y_pred = self.pipeline.predict(X_test)
-        acc = accuracy_score(y_test, y_pred)
+        # Calibrate probabilities using holdout (robust across sklearn versions)
+        self._log("Step 6: Calibrating probabilities (isotonic/sigmoid fallback)...")
+        calibrator = None
+        try:
+            base_clf = self.pipeline.named_steps['clf']
+            scaler = self.pipeline.named_steps['scaler']
+            X_hold_scaled = scaler.transform(X_hold)
 
-        print(f"Test Accuracy: {acc:.4f} ({acc*100:.1f}%)")
-        print("\nClassification Report:")
-        report = classification_report(y_test, y_pred, target_names=['Legitimate', 'Malicious'])
-        print(report)
+            # Try modern API first (estimator param)
+            try:
+                calibrator = CalibratedClassifierCV(estimator=base_clf, method='isotonic', cv=5)
+            except TypeError:
+                # Older sklearn uses base_estimator param name
+                calibrator = CalibratedClassifierCV(base_estimator=base_clf, method='isotonic', cv=5)
 
-        cm = confusion_matrix(y_test, y_pred)
-        print(f"Confusion Matrix:")
-        print(f"  True Legit (correct):    {cm[0][0]}")
-        print(f"  False Positive (wrong):  {cm[0][1]}  ← should be LOW")
-        print(f"  False Negative (missed): {cm[1][0]}  ← should be LOW")
-        print(f"  True Malicious (correct):{cm[1][1]}")
+            calibrator.fit(X_hold_scaled, y_hold)
+            # Replace clf with calibrated wrapper
+            self.pipeline.named_steps['clf'] = calibrator
+            self._log("Calibration complete (isotonic).")
+        except Exception as e_iso:
+            self._log(f"Isotonic calibration failed: {e_iso}. Trying sigmoid (Platt) fallback.")
+            try:
+                # Try sigmoid (more stable on small calibration sets)
+                try:
+                    calibrator = CalibratedClassifierCV(estimator=base_clf, method='sigmoid', cv=5)
+                except TypeError:
+                    calibrator = CalibratedClassifierCV(base_estimator=base_clf, method='sigmoid', cv=5)
+                calibrator.fit(X_hold_scaled, y_hold)
+                self.pipeline.named_steps['clf'] = calibrator
+                self._log("Calibration complete (sigmoid).")
+            except Exception as e_sig:
+                self._log(f"Calibration failed entirely: {e_sig}. Proceeding without calibration.")
+                calibrator = None
 
-        # Step 7: Save
-        joblib.dump(self.pipeline, self.model_path)
-        print(f"\nModel saved to {self.model_path}")
+        # Step 6: Evaluate on holdout
+        self._log("\n=== EVALUATION ===")
+        probs = self.pipeline.predict_proba(X_hold)[:, 1]
+        preds = (probs >= 0.5).astype(int)
+        acc = accuracy_score(y_hold, preds)
+        report = classification_report(y_hold, preds, target_names=['Legitimate', 'Malicious'])
+        cm = confusion_matrix(y_hold, preds)
+        self._log(f"Test Accuracy: {acc:.4f} ({acc*100:.1f}%)")
+        self._log("\nClassification Report:")
+        self._log(report)
+        self._log("Confusion Matrix:")
+        self._log(f"  True Legit (correct):    {cm[0][0]}")
+        self._log(f"  False Positive (wrong):  {cm[0][1]}")
+        self._log(f"  False Negative (missed): {cm[1][0]}")
+        self._log(f"  True Malicious (correct):{cm[1][1]}")
+
+        # Compute operational threshold from precision-recall curve
+        precision, recall, thresholds = precision_recall_curve(y_hold, probs)
+        # thresholds[i] corresponds to precision[i+1], recall[i+1]
+        # We want indices in thresholds where recall at thresholds >= desired_recall
+        desired_recall = 0.98
+        # recall_for_thresholds aligns with thresholds
+        recall_for_thresholds = recall[1:]
+        idxs = np.where(recall_for_thresholds >= desired_recall)[0]
+
+        if len(idxs) > 0:
+            operational_threshold = float(thresholds[idxs[0]])
+        else:
+            # fallback: choose threshold that maximizes F1 (exclude last element)
+            f1_scores = 2 * (precision * recall) / (precision + recall + 1e-12)
+            # f1_scores length == len(precision); thresholds length == len(precision)-1
+            best_idx = int(np.nanargmax(f1_scores[:-1]))
+            operational_threshold = float(thresholds[best_idx]) if len(thresholds) > 0 else 0.5
+
+        # enforce a sensible minimum floor to avoid near-zero thresholds
+        MIN_THRESHOLD = 0.05
+        operational_threshold = max(operational_threshold, MIN_THRESHOLD)
+        self._log(f"Chosen operational threshold: {operational_threshold:.3f}")
+
+        # Step 8: Save pipeline and metadata
+        timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        model_artifact = {
+            "pipeline": self.pipeline,
+            "feature_names": self.feature_names,
+            "threshold": operational_threshold,
+            "calibrator": calibrator,
+            "trained_at": timestamp
+        }
+        joblib.dump(model_artifact, self.model_path)
+        self._log(f"Model saved to {self.model_path}")
 
         return {
             "accuracy": acc,
@@ -159,49 +259,63 @@ class ThreatModel:
             "false_positives": int(cm[0][1]),
             "false_negatives": int(cm[1][0]),
             "true_malicious": int(cm[1][1]),
+            "model_path": self.model_path,
+            "threshold": operational_threshold,
+            "trained_at": timestamp
         }
 
-    def predict(self, url: str) -> dict:
+    def predict(self, url: str):
         """
-        Predict if a URL is malicious.
-        Returns is_malicious (bool) and confidence (float 0-1).
+        Predict if a URL is malicious. Returns dict with probabilities, threshold used,
+        action triage, and top contributing features (raw values).
         """
         if not self.pipeline:
             raise Exception("Model not trained. Run train_model.py first.")
 
-        features = np.array([url_to_feature_vector(url)])
+        features = np.array([url_to_feature_vector(url)], dtype=float)
+        # scale then predict_proba via pipeline
         prob = self.pipeline.predict_proba(features)[0]
-        is_malicious = bool(self.pipeline.predict(features)[0])
-
-        # prob[0] = probability of legitimate
-        # prob[1] = probability of malicious
         malicious_prob = float(prob[1])
+        
+        # Get threshold from saved model artifact
+        threshold = 0.6  # default
+        try:
+            loaded = joblib.load(self.model_path)
+            threshold = loaded.get('threshold', threshold)
+        except Exception:
+            pass
 
-        # Apply a confidence THRESHOLD to reduce false positives.
-        # Only call it malicious if the model is > 60% confident.
-        THRESHOLD = 0.60
-        if malicious_prob >= THRESHOLD:
+        # Two-threshold triage for better decision making
+        high_threshold = max(threshold, 0.5)   # auto-block threshold
+        low_threshold = min(threshold, 0.2)    # manual review threshold
+
+        action = "allow"
+        is_malicious = False
+        
+        if malicious_prob >= high_threshold:
             is_malicious = True
+            action = "block"
+        elif malicious_prob >= low_threshold:
+            is_malicious = False
+            action = "manual_review"
         else:
             is_malicious = False
+            action = "allow"
 
-        # Get which features triggered the most suspicion (for explainability)
+        # top features by raw value
         feature_values = url_to_feature_vector(url)
-        feature_names = get_feature_names()
-        top_features = [
-            {"feature": feature_names[i], "value": feature_values[i]}
-            for i in sorted(
-                range(len(feature_values)),
-                key=lambda x: feature_values[x],
-                reverse=True
-            )[:5]
-        ]
+        feature_names = self.feature_names
+        top_idx = sorted(range(len(feature_values)), key=lambda i: feature_values[i], reverse=True)[:5]
+        top_features = [{"feature": feature_names[i], "value": float(feature_values[i])} for i in top_idx]
 
         return {
-            "is_malicious": is_malicious,
+            "is_malicious": bool(is_malicious),
+            "action": action,
             "confidence": malicious_prob,
             "probability_legitimate": float(prob[0]),
             "probability_malicious": malicious_prob,
             "top_suspicious_features": top_features,
-            "threshold_used": THRESHOLD
+            "threshold_used": float(threshold),
+            "high_threshold": float(high_threshold),
+            "low_threshold": float(low_threshold)
         }

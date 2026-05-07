@@ -99,7 +99,10 @@ def extract_features(url: str) -> dict:
     features['has_double_slash_redirect'] = 1 if '//' in path else 0
     features['has_prefix_suffix_hyphen'] = 1 if '-' in domain else 0
     features['has_encoded_chars'] = 1 if '%' in full_url else 0
-    features['has_port'] = 1 if parsed.port and parsed.port not in (80, 443) else 0
+    try:
+        features['has_port'] = 1 if parsed.port and parsed.port not in (80, 443) else 0
+    except (ValueError, AttributeError):
+        features['has_port'] = 0
 
     # ── Suspicious keyword features ──
     features['has_suspicious_brand'] = 1 if any(
