@@ -1,6 +1,7 @@
 import fs from 'fs';
+import path from 'path';
 
-const path = './dist/client/wrangler.json';
+const configPath = path.resolve('./dist/client/wrangler.json');
 
 if (!fs.existsSync(path)) {
   console.log('wrangler.json not found, skipping sanitization');
