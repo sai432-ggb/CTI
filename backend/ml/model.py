@@ -27,24 +27,43 @@ class ThreatModel:
         os.makedirs(self.cache_dir, exist_ok=True)
         self.pipeline = None
         self.feature_names = get_feature_names()
+        self.scaler = None
+        self.threshold = 0.6
         self.logger = logger
         # load existing model if present
         if os.path.exists(self.model_path):
             try:
                 loaded = joblib.load(self.model_path)
-                # support both dict and pipeline-only artifacts
-                if isinstance(loaded, dict) and 'pipeline' in loaded:
-                    self.pipeline = loaded['pipeline']
-                    self.feature_names = loaded.get('feature_names', self.feature_names)
-                    self.threshold = loaded.get('threshold', 0.6)
+                # support multiple model formats
+                if isinstance(loaded, dict):
+                    if 'pipeline' in loaded:
+                        # Standard ThreatModel format
+                        self.pipeline = loaded['pipeline']
+                        self.feature_names = loaded.get('feature_names', self.feature_names)
+                        self.threshold = loaded.get('threshold', 0.6)
+                    elif 'model' in loaded and 'scaler' in loaded:
+                        # Full dataset training format
+                        self.scaler = loaded['scaler']
+                        self.pipeline = loaded['model']
+                        self.feature_names = loaded.get('feature_names', self.feature_names)
+                        self.threshold = loaded.get('threshold', 0.05)
+                    else:
+                        # Unknown dict format
+                        raise ValueError("Unknown model dict format")
                 else:
+                    # Direct pipeline (legacy format)
                     self.pipeline = loaded
                     self.threshold = 0.6
+                
                 if self.logger:
                     self.logger.info(f"Loaded existing model from {self.model_path}")
+                    if self.scaler:
+                        self.logger.info("Using full dataset model with separate scaler")
             except Exception as e:
                 if self.logger:
                     self.logger.warning(f"Failed to load existing model: {e}")
+                # Fallback to untrained state
+                self.pipeline = None
 
     def _log(self, msg):
         if self.logger:
@@ -273,21 +292,21 @@ class ThreatModel:
             raise Exception("Model not trained. Run train_model.py first.")
 
         features = np.array([url_to_feature_vector(url)], dtype=float)
-        # scale then predict_proba via pipeline
-        prob = self.pipeline.predict_proba(features)[0]
+        
+        # Handle different model formats
+        if self.scaler:
+            # Full dataset model with separate scaler
+            features_scaled = self.scaler.transform(features)
+            prob = self.pipeline.predict_proba(features_scaled)[0]
+        else:
+            # Standard pipeline model
+            prob = self.pipeline.predict_proba(features)[0]
+        
         malicious_prob = float(prob[1])
         
-        # Get threshold from saved model artifact
-        threshold = 0.6  # default
-        try:
-            loaded = joblib.load(self.model_path)
-            threshold = loaded.get('threshold', threshold)
-        except Exception:
-            pass
-
         # Two-threshold triage for better decision making
-        high_threshold = max(threshold, 0.5)   # auto-block threshold
-        low_threshold = min(threshold, 0.2)    # manual review threshold
+        high_threshold = max(self.threshold, 0.5)   # auto-block threshold
+        low_threshold = min(self.threshold, 0.2)    # manual review threshold
 
         action = "allow"
         is_malicious = False
@@ -315,7 +334,7 @@ class ThreatModel:
             "probability_legitimate": float(prob[0]),
             "probability_malicious": malicious_prob,
             "top_suspicious_features": top_features,
-            "threshold_used": float(threshold),
+            "threshold_used": float(self.threshold),
             "high_threshold": float(high_threshold),
             "low_threshold": float(low_threshold)
         }
