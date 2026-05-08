@@ -6,13 +6,10 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
-    "postbuild": "node -e \"require('node:fs').rmSync('dist/client/wrangler.json',{force:true})\"",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
     "lint": "eslint .",
-    "format": "prettier --write .",
-    "build:cf": "npm run build",
-    "deploy": "npm run build && wrangler deploy"
+    "format": "prettier --write ."
   },
   "dependencies": {
     "@cloudflare/vite-plugin": "^1.25.5",
