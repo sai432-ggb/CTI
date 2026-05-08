@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
+    "build": "vite build && npm run postbuild",
+    "postbuild": "node -e \"const f='dist/client/wrangler.json',fs=require('fs');if(fs.existsSync(f)){const j=JSON.parse(fs.readFileSync(f,'utf8'));delete j.triggers;delete j.definedEnvironments;delete j.ai_search_namespaces;delete j.ai_search;delete j.secrets_store_secrets;delete j.artifacts;delete j.unsafe_hello_world;delete j.flagship;delete j.worker_loaders;delete j.ratelimits;delete j.vpc_services;delete j.vpc_networks;delete j.python_modules;delete j.assets;if(j.dev){delete j.dev.enable_containers;delete j.dev.generate_types;}fs.writeFileSync(f,JSON.stringify(j,null,2));}\"",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
     "lint": "eslint .",
